@@ -11,46 +11,49 @@
  * Todo: add preferences, AP config mode and OTA 
  */
 #include <Arduino.h>
-#include <DTSU666.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <DNSServer.h>
+#include <WiFiManager.h>  
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <DTSU666.h>
 
 // Max485 module, We use 3v3, should be 5v but this works fine for not very long lines.
 #define TX1 D7  // 485 DI Pin
 #define RX1 D6  // 485 RO pin
 #define RE_DE1 D2  // 485 combined RE DE
 
-#define TX2 D0  // 485 DI Pin
-#define RX2 D5  // 485 RO pin
-#define RE_DE2 D1  // 485 combined RE DE
+#define BUZZER D4
 
-#define SLAVE_ID_1  0x15
-#define SLAVE_ID_2  1
-#define SOURCE_ID   1
-#define PV_REFRESH        5432  // milliseconds
+// #define TX2 D0  // 485 DI Pin
+// #define RX2 D5  // 485 RO pin
+// #define RE_DE2 D1  // 485 combined RE DE
+
+#define SLAVE_ID_1            0x15
+#define CHECK_INTERVAL        5432  // milliseconds
 
 // MQTT section. Lster: preferences
-const char * MQTT_BROKER_ADRRESS  = "diskstation.kpn";
-const int    MQTT_PORT            = 1883;
-const char * MQTT_CLIENT_ID       = "DTSU666-emulator";
-const char * MQTT_USERNAME        = "";                        
-const char * MQTT_PASSWORD        = "";
-const char * SUBSCRIBE_TOPIC      = "pvdata/#";             
-const char * ssid                 = "WifivanSimi2,4G";
-const char * password             = "2xButJptrzyr";
-const char * hostname             = "dtsu666PV.kpn";
+const char * HOSTNAME             = "dtsu666PV.local";
+const char * AP_NAME              = "DTSU666PV_AP";
+const char * MQTT_CLIENT_ID       = "ESP8266_DTSU666PV";                        
 
-WiFiClient wifi;
-PubSubClient mqtt(wifi);
-JsonDocument doc;
+Preferences   prefs;
+WiFiClient    wificlient;
+PubSubClient  mqtt(wificlient);
+JsonDocument  doc;
+
+// the custome parameters strings for configuration
+char mqttserver[40] = "diskstation.local";
+char mqttport[6]    = "1883";
+char mqtttopic[32]  = "pvdata/#";
 
 // Declare the meters and serial lines
 // DTSU666 Power(SLAVE_ID_1);
 SoftwareSerial S1(RX1,TX1);
 //DTSU666 Source;
 DTSU666 PV(SLAVE_ID_1);
-
 
 // define what daat we need from PV, and where to store it
 typedef struct JsonEntry {
@@ -74,6 +77,13 @@ JsonEntry pvData[] = {
 };
 const size_t NUM_PVREGS = ARRAY_SIZE(pvData); 
 
+void beep(int n) {
+  while(n--) {
+    digitalWrite(BUZZER,HIGH);
+    delay(250);
+    digitalWrite(BUZZER,LOW);
+  }
+}
 // the callback
 //
 void readPV (char* topic, byte* payload, unsigned int length) {
@@ -87,11 +97,73 @@ void readPV (char* topic, byte* payload, unsigned int length) {
       float val = 0;
       val = doc[pvData[i].key].as<float>() * pvData[i].multiplier;
       if (pvData[i].address == 0x2012) {
-        Serial.print("OutputPower = ") ; Serial.println(val,2);
+        Serial.print(F("OutputPower = ")) ; Serial.println(val,2);
       }
       PV.setReg(pvData[i].address,val);
     }
     digitalWrite(LED_BUILTIN, HIGH); 
+  }
+}
+
+// reconnect to wifi, if not available goto AP config mode
+// when called with "force", always got to AP mode to get MQTT params
+//
+bool shouldSaveConfig = false;
+void saveCb() {
+  Serial.println("Should save config");
+  shouldSaveConfig = true; 
+}
+void reconnectWifi(int force = false) {
+  // local vars, when done no need to have them around
+  WiFiManager   wm;
+  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqttserver, 40);
+  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqttport, 6);
+  WiFiManagerParameter custom_mqtt_topic("topic", "mqtt topic", mqtttopic, 32);
+
+  //set config save notify callback. 
+  // Problem: if call expetcs a function pointer, we can't use a lambda with capture so the use
+  // of a lambda is pointless
+  // so use g
+  wm.setSaveConfigCallback(saveCb);
+
+  //add all your parameters here
+  wm.addParameter(&custom_mqtt_server);
+  wm.addParameter(&custom_mqtt_port);
+  wm.addParameter(&custom_mqtt_topic);
+
+  // go into config mode , block or wat and retry 
+  // this is usefull to prevent a block in AP mode when Wifi is offline
+  // indefinite wait shoudl only happen whe nothing is configured
+  if (force) {
+    Serial.println(F("Start AP and configuration mode (forced) "));
+    wm.startConfigPortal(AP_NAME);
+  } else {
+    wm.setTimeout(120);
+    Serial.println(F("Try to connect, if not goto AP and configuration mode for 2 minutes"));
+    if (!wm.autoConnect(AP_NAME)) {
+      Serial.println(F("failed to connect and hit timeout, restart"));
+      delay(3000);
+      //reset and try again, or maybe put it to deep sleep
+      ESP.reset();
+      delay(5000);
+    }
+  }
+  Serial.print(F("Connected to SSID ")) ; Serial.println(WiFi.SSID());
+  Serial.print(F("IP address ")) ; Serial.println(WiFi.localIP());
+
+  // parameters changed ?
+  if (shouldSaveConfig) {
+    Serial.print(F("Saving MQTT parameters ")) ;
+    strcpy(mqttserver, custom_mqtt_server.getValue());
+    prefs.putString("mqttserver", mqttserver);
+
+    strcpy(mqttport, custom_mqtt_port.getValue());
+    prefs.putString("mqttport",mqttport);
+
+    strcpy(mqtttopic, custom_mqtt_topic.getValue());
+    prefs.putString("mqtttopic", mqtttopic);
+    
+    shouldSaveConfig = false;
   }
 }
 
@@ -100,22 +172,25 @@ void readPV (char* topic, byte* payload, unsigned int length) {
 bool reConnectMQTT() {
 
   int numtries = 40;
-  Serial.print(F("(re)connecting to MQTT broker ")); Serial.println(MQTT_BROKER_ADRRESS);
+  Serial.print(F("(re)connecting to MQTT broker ")); Serial.print(mqttserver);
+  Serial.print(F(" on port ")); Serial.println(mqttport);
 
   while (!mqtt.connected() && numtries-- > 0) {
     delay(250);
     mqtt.connect(MQTT_CLIENT_ID);
     Serial.print(".");
   }
+  
   if (!mqtt.connected()) {
     Serial.println(F("\nMQTT connect Timeout!"));
+    reconnectWifi(true);
     return false;
   }
   Serial.println(" OK");
 
   // Subscribe to a topic, the incoming messages are processed by messageHandler() function
-  Serial.print(F("Subscribe to topic ")); Serial.print(SUBSCRIBE_TOPIC);
-  if (mqtt.subscribe(SUBSCRIBE_TOPIC))
+  Serial.print(F("Subscribe to topic ")); Serial.print(mqtttopic);
+  if (mqtt.subscribe(mqtttopic))
     Serial.println(F(" : OK"));
   else {
     Serial.println(F(" : Failed"));
@@ -132,18 +207,24 @@ void setup() {
   Serial.println(F("Modbus DTSU666 PV emulator V 1.0"));
 
   pinMode(LED_BUILTIN,OUTPUT);
-
-  WiFi.setHostname(hostname);
-  WiFi.begin(ssid, password);
-  Serial.print(F("Connecting to ")); Serial.println(ssid);
-  while(WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  digitalWrite(LED_BUILTIN,LOW);
+  pinMode(BUZZER,OUTPUT);
+  digitalWrite(BUZZER,LOW);
+  
+  prefs.begin("DTSU666"); // use "dtsu" namespace
+  // get stored persistent values. If nothing there? stay in AP mode
+  if (! (prefs.isKey("mqttserver") && prefs.isKey("mqttport") && prefs.isKey("mqtttopic"))) {
+    reconnectWifi(true);
+  } else {
+    // aparently we have been configured in the pat, so all should work
+    prefs.getString("mqttserver", mqttserver, sizeof(mqttserver));
+    prefs.getString("mqttport", mqttport, sizeof(mqttport));
+    prefs.getString("mqtttopic", mqtttopic, sizeof(mqtttopic));
+    // just keep trying until we are online
+    reconnectWifi(false);
   }
+
   WiFi.setAutoReconnect(true);
-  Serial.println("");
-  Serial.print(F("Connected to WiFi network with IP Address: "));
-  Serial.println(WiFi.localIP());
 
   // init Serial lines
   S1.begin(9600, SWSERIAL_8N1);
@@ -152,23 +233,26 @@ void setup() {
 
   // Connect to the MQTT broker
   mqtt.setBufferSize(2048);
-  mqtt.setServer(MQTT_BROKER_ADRRESS, MQTT_PORT);
+  mqtt.setServer(mqttserver, String(mqttport).toInt());
   mqtt.setCallback(readPV);
 
-  // Try to connect, if fails mainloop will retry 
+  // Try to connect, if fails no problem mainloop will retry 
   reConnectMQTT();
   
   Serial.println(F("Setup done "));
 
 }
 
-ulong lastread = 0;
+ulong lastcheck = 0;
 void loop() {
 
-  if (millis() - lastread > PV_REFRESH) { 
-    if (!mqtt.connected())  reConnectMQTT();
+  if (millis() - lastcheck > CHECK_INTERVAL) {
+    // not connected? TRy to reconnect . If that fails the unit will retsart,
+    // there is no point keep serving modbus requests with outdated data
+    if (!WiFi.isConnected())  reconnectWifi(120);
+    if (!mqtt.connected())    reConnectMQTT();
       //PV.printRegs(0x2006,20);
-    lastread = millis();
+    lastcheck = millis();
   }
   mqtt.loop();
   PV.task();
