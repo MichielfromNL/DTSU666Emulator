@@ -13,7 +13,7 @@
 #include <Arduino.h>
 #include <DTSU666.h>
 #include <ESP8266WiFi.h>
-#include <MQTTClient.h> 
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
 
 // Max485 module, We use 3v3, should be 5v but this works fine for not very long lines.
@@ -41,15 +41,16 @@ const char * ssid                 = "WifivanSimi2,4G";
 const char * password             = "2xButJptrzyr";
 const char * hostname             = "dtsu666PV.kpn";
 
-WiFiClient network;
-MQTTClient mqtt = MQTTClient(2048);
+WiFiClient wifi;
+PubSubClient mqtt(wifi);
+JsonDocument doc;
 
 // Declare the meters and serial lines
 // DTSU666 Power(SLAVE_ID_1);
 SoftwareSerial S1(RX1,TX1);
 //DTSU666 Source;
 DTSU666 PV(SLAVE_ID_1);
-JsonDocument doc;
+
 
 // define what daat we need from PV, and where to store it
 typedef struct JsonEntry {
@@ -73,49 +74,53 @@ JsonEntry pvData[] = {
 };
 const size_t NUM_PVREGS = ARRAY_SIZE(pvData); 
 
-bool newMessage = false;
-// reads data from PV, to store in relevant registers
+// the callback
 //
-bool readPV(String & topic, String & message) {
+void readPV (char* topic, byte* payload, unsigned int length) {
 
   doc.clear();
-  deserializeJson(doc, message);
+  deserializeJson(doc, payload);
 
-  for (size_t i=0; i< NUM_PVREGS; i++) {
-    float val = 0;
-    val = doc[pvData[i].key].as<float>() * pvData[i].multiplier;
-    if (pvData[i].address == 0x2012) {
-      Serial.print("OutputPower = ") ; Serial.println(val,2);
+  if (doc.size() > 1) {
+    digitalWrite(LED_BUILTIN, LOW); 
+    for (size_t i=0; i< NUM_PVREGS; i++) {
+      float val = 0;
+      val = doc[pvData[i].key].as<float>() * pvData[i].multiplier;
+      if (pvData[i].address == 0x2012) {
+        Serial.print("OutputPower = ") ; Serial.println(val,2);
+      }
+      PV.setReg(pvData[i].address,val);
     }
-    PV.setReg(pvData[i].address,val);
+    digitalWrite(LED_BUILTIN, HIGH); 
   }
-  newMessage = true;
-  return true;
 }
 
 // connect to broker
 //
 bool reConnectMQTT() {
 
-  Serial.print(F("(re)connecting to MQTT broker"));
+  int numtries = 40;
+  Serial.print(F("(re)connecting to MQTT broker ")); Serial.println(MQTT_BROKER_ADRRESS);
 
-  while (!mqtt.connect(MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD)) {
+  while (!mqtt.connected() && numtries-- > 0) {
+    delay(250);
+    mqtt.connect(MQTT_CLIENT_ID);
     Serial.print(".");
-    delay(100);
   }
-  Serial.println();
   if (!mqtt.connected()) {
-    Serial.println(F("MQTT broker Timeout!"));
+    Serial.println(F("\nMQTT connect Timeout!"));
     return false;
   }
+  Serial.println(" OK");
 
   // Subscribe to a topic, the incoming messages are processed by messageHandler() function
+  Serial.print(F("Subscribe to topic ")); Serial.print(SUBSCRIBE_TOPIC);
   if (mqtt.subscribe(SUBSCRIBE_TOPIC))
-    Serial.print(F("Subscribed to the topic: "));
+    Serial.println(F(" : OK"));
   else {
-    Serial.println(F("Failed to subscribe "));
+    Serial.println(F(" : Failed"));
+    return false;
   }
-  Serial.println(SUBSCRIBE_TOPIC);
   Serial.println(F("MQTT broker Connected!"));
   return true;
 }
@@ -125,6 +130,8 @@ void setup() {
 
   Serial.begin(115200);
   Serial.println(F("Modbus DTSU666 PV emulator V 1.0"));
+
+  pinMode(LED_BUILTIN,OUTPUT);
 
   WiFi.setHostname(hostname);
   WiFi.begin(ssid, password);
@@ -144,9 +151,9 @@ void setup() {
   PV.printRegs(0x0,11);
 
   // Connect to the MQTT broker
-  mqtt.begin(MQTT_BROKER_ADRRESS, MQTT_PORT, network);
-  // Register a handler for incoming messages
-  mqtt.onMessage(readPV);
+  mqtt.setBufferSize(2048);
+  mqtt.setServer(MQTT_BROKER_ADRRESS, MQTT_PORT);
+  mqtt.setCallback(readPV);
 
   // Try to connect, if fails mainloop will retry 
   reConnectMQTT();
