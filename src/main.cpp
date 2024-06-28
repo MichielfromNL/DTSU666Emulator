@@ -8,7 +8,7 @@
  * @copyright Copyright (c) 2024, MIT license
  *  DTSU666 manual: https://www.solaxpower.com/uploads/file/dtsu666-user-manual-en.pdf
  * 
- * Todo: add preferences, AP config mode and OTA 
+ * Todo: add OTA 
  */
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
@@ -25,7 +25,7 @@
 #define RX1 D6  // 485 RO pin
 #define RE_DE1 D2  // 485 combined RE DE
 
-#define BUZZER D4
+#define BUTTON D4
 
 // #define TX2 D0  // 485 DI Pin
 // #define RX2 D5  // 485 RO pin
@@ -77,13 +77,6 @@ JsonEntry pvData[] = {
 };
 const size_t NUM_PVREGS = ARRAY_SIZE(pvData); 
 
-void beep(int n) {
-  while(n--) {
-    digitalWrite(BUZZER,HIGH);
-    delay(250);
-    digitalWrite(BUZZER,LOW);
-  }
-}
 // the callback
 //
 void readPV (char* topic, byte* payload, unsigned int length) {
@@ -208,8 +201,7 @@ void setup() {
 
   pinMode(LED_BUILTIN,OUTPUT);
   digitalWrite(LED_BUILTIN,LOW);
-  pinMode(BUZZER,OUTPUT);
-  digitalWrite(BUZZER,LOW);
+  pinMode(BUTTON,INPUT_PULLUP);
   
   prefs.begin("DTSU666"); // use "dtsu" namespace
   // get stored persistent values. If nothing there? stay in AP mode
@@ -246,6 +238,10 @@ void setup() {
 ulong lastcheck = 0;
 void loop() {
 
+  if (digitalRead(BUTTON) == LOW) {
+    Serial.println(F("Button pressed, going into config mode"));
+    reconnectWifi(0);
+  }
   if (millis() - lastcheck > CHECK_INTERVAL) {
     // not connected? TRy to reconnect . If that fails the unit will retsart,
     // there is no point keep serving modbus requests with outdated data
