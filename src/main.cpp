@@ -21,11 +21,11 @@
 #include <DTSU666.h>
 
 // Max485 module, We use 3v3, should be 5v but this works fine for not very long lines.
-#define TX1 D7  // 485 DI Pin
-#define RX1 D6  // 485 RO pin
-#define RE_DE1 D2  // 485 combined RE DE
+#define TX1     D7  // 485 DI Pin
+#define RX1     D6  // 485 RO pin
+#define RE_DE1  D2  // 485 combined RE DE
 
-#define BUTTON D4
+#define BUTTON  D5
 
 // #define TX2 D0  // 485 DI Pin
 // #define RX2 D5  // 485 RO pin
@@ -79,22 +79,22 @@ const size_t NUM_PVREGS = ARRAY_SIZE(pvData);
 
 // the callback
 //
+ulong ledOn = 0;   // `flash time is too short, switch off in mainloop
 void readPV (char* topic, byte* payload, unsigned int length) {
 
   doc.clear();
   deserializeJson(doc, payload);
 
   if (doc.size() > 1) {
-    digitalWrite(LED_BUILTIN, LOW); 
+    digitalWrite(LED_BUILTIN, LOW); ledOn = millis();
     for (size_t i=0; i< NUM_PVREGS; i++) {
       float val = 0;
       val = doc[pvData[i].key].as<float>() * pvData[i].multiplier;
       if (pvData[i].address == 0x2012) {
-        Serial.print(F("OutputPower = ")) ; Serial.println(val,2);
+        Serial.printf("%s = %.1f\n", pvData[i].key,val);
       }
       PV.setReg(pvData[i].address,val);
     }
-    digitalWrite(LED_BUILTIN, HIGH); 
   }
 }
 
@@ -200,7 +200,7 @@ void setup() {
   Serial.println(F("Modbus DTSU666 PV emulator V 1.0"));
 
   pinMode(LED_BUILTIN,OUTPUT);
-  digitalWrite(LED_BUILTIN,LOW);
+  digitalWrite(LED_BUILTIN,HIGH);
   pinMode(BUTTON,INPUT_PULLUP);
   
   prefs.begin("DTSU666"); // use "dtsu" namespace
@@ -240,8 +240,14 @@ void loop() {
 
   if (digitalRead(BUTTON) == LOW) {
     Serial.println(F("Button pressed, going into config mode"));
-    reconnectWifi(0);
+    reconnectWifi(true);
   }
+  // switch led off if on
+  if (ledOn > 0 && millis() - ledOn > 250 ) {
+    digitalWrite(LED_BUILTIN,HIGH);
+    ledOn = 0;
+  }
+
   if (millis() - lastcheck > CHECK_INTERVAL) {
     // not connected? TRy to reconnect . If that fails the unit will retsart,
     // there is no point keep serving modbus requests with outdated data
