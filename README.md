@@ -5,7 +5,11 @@ But for that, the battery unit needs to have an extra meter for the PV data: amp
 However, my  meter closed is already quite packed and there is ample room for (yet) anothe 3-phase meter. 
 So I decided to emulate the second CHINT DTSU666 , make it a Modbus RTU slave (server) and let it feed datato the battery unit. THat is possible because all PV data is already present.
 
+<<<<<<< HEAD
 ![DTSU emulator schematics](/doc/Schematics1.png)
+=======
+![alt DTSU emulator schematics] (https://github.com/MichielfromNL/DTSU666Emulator/tree/main/doc/Schematics1.png)
+>>>>>>> 512cf368765920243cda0686dc146d305ce8bf99
 
 The data source for PV is a Growatt inverter, which I equipped with new firmware so that I can get at the PV data.  https://github.com/Alkhateb/Growatt_ShineWiFi-X works quite well
 The stick is also an MQTT client, I push the data to my local Mosquitto server which runs in a docker container on my Synology diskstation
