@@ -8,12 +8,12 @@
  * @copyright Copyright (c) 2024, MIT license
  *  DTSU666 manual: https://www.solaxpower.com/uploads/file/dtsu666-user-manual-en.pdf
  * 
- * Todo: add OTA 
  */
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
+#include <ArduinoOTA.h>
 #include <WiFiManager.h>  
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -102,10 +102,12 @@ void readPV (char* topic, byte* payload, unsigned int length) {
 // when called with "force", always got to AP mode to get MQTT params
 //
 bool shouldSaveConfig = false;
+
 void saveCb() {
   Serial.println("Should save config");
   shouldSaveConfig = true; 
 }
+
 void reconnectWifi(int force = false) {
   // local vars, when done no need to have them around
   WiFiManager   wm;
@@ -123,6 +125,10 @@ void reconnectWifi(int force = false) {
   wm.addParameter(&custom_mqtt_server);
   wm.addParameter(&custom_mqtt_port);
   wm.addParameter(&custom_mqtt_topic);
+
+#ifdef PRODUCTION
+  wm.setDebugOutput(false);
+#endif
 
   // go into config mode , block or wat and retry 
   // this is usefull to prevent a block in AP mode when Wifi is offline
@@ -193,6 +199,45 @@ bool reConnectMQTT() {
   return true;
 }
 
+void setupOTA() {
+
+	// Port defaults to 8266
+
+	// ArduinoOTA.setPort(8266);
+
+	// Hostname defaults to esp8266-[ChipID]
+
+	// ArduinoOTA.setHostname("myesp8266");
+
+	// No authentication by default
+
+	// ArduinoOTA.setPassword("admin");
+
+	// Password can be set with it's md5 value as well
+
+	// MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
+
+	ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
+
+	ArduinoOTA.onStart([]() {
+		String type;
+		type = ArduinoOTA.getCommand() == U_FLASH ? "sketch" : "filesystem";
+		Serial.println("Start updating " + type);
+	});
+
+	ArduinoOTA.onEnd([]() { Serial.println("\nEnd"); });
+
+	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+		Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+	});
+
+	ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA Error[%u]", error);
+    });
+
+	ArduinoOTA.begin();
+	Serial.println(F("OTA Ready"));
+}
 // 
 void setup() {
 
@@ -231,6 +276,8 @@ void setup() {
   // Try to connect, if fails no problem mainloop will retry 
   reConnectMQTT();
   
+  setupOTA();
+
   Serial.println(F("Setup done "));
 
 }
@@ -239,7 +286,7 @@ ulong lastcheck = 0;
 void loop() {
 
   if (digitalRead(BUTTON) == LOW) {
-    Serial.println(F("Button pressed, going into config mode"));
+    Serial.println(F("Button pressed, going into config mode"));  
     reconnectWifi(true);
   }
   // switch led off if on
@@ -256,6 +303,7 @@ void loop() {
       //PV.printRegs(0x2006,20);
     lastcheck = millis();
   }
+  ArduinoOTA.handle();
   mqtt.loop();
   PV.task();
   yield();

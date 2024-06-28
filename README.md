@@ -16,7 +16,6 @@ Next, I created an ESP8266 sketch to subscribe to MQTT and run a Modbus RTU serv
 For the emulation I wrote a DTSU666 class (see the header and cpp in lib) which mimics all registers of the DTSU666 meter , making it  100% data emulation.  The only thing missing (data I don't have) is reactive power, but for  PV that is obviously not a problem, zero is just fine.
 
 Configuration is done with the excellent wifimanager libray so that a zero config setup works well. Using wifimanager makes it also resliient : when wifi goes away of MQTT is no available, the unit keeps retrying.
-Todo: add OTA
 
 The solution works perfect. Code is here for grabs.
 If you need to adapt the code for another PV:  the only thing to do is change the MQTT callback depending on the data that you get. Alternatively, you could get data via HTTP requests, but that is not something that I would recommend, reason: an HTTP request is blocking and can take several seconds, during that time the modbus server cannot return data. MQTT data is immediate (msecs) since data is pushed over an esisting connection
