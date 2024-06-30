@@ -31,9 +31,9 @@ typedef struct registerDef {
 // or from another source 
 class DTSU666 {
 public: 
-  DTSU666() {};  // when it is a master
+  DTSU666() {};  // master, or set slave later
   DTSU666(uint slave_id) : _slaveid(slave_id) {};
-  void    begin(SoftwareSerial * S, int16_t en_pin);
+  void    begin(SoftwareSerial * S, int16_t en_pin, uint slaveid = 0);
   void    setReg(word address, float value);
   size_t  readMeterData(uint slaveId,bool config = false);
   void    printRegs(word start, size_t numregs);

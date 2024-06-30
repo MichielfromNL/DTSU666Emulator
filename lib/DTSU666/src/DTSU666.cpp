@@ -207,7 +207,9 @@ size_t DTSU666::readMeterData(uint slaveId, bool config) {
 
 // Setup our meter image 
 // 
-void DTSU666::begin(SoftwareSerial * S, int16_t re_depin) {
+void DTSU666::begin(SoftwareSerial * S, int16_t re_depin, uint slaveid) {
+
+  if (_slaveid == 0) _slaveid = slaveid;  // set if not already initialized, optional slaveid defaults to 0
 
   mb.begin(S,re_depin);
   delay(500);

@@ -1,9 +1,9 @@
 /**
- * @file DTSU666 emulator
- * @author Michiel STeltman (git: michielfromNL, msteltman@disway.nl 
- * @brief  Emulates a bunch of DTSU666 meters over modbus RTU . Uses MQTT to get data
- * @version 0.1
- * @date 2024-06-17
+ * @file    DTSU666 PV emulator
+ * @author  Michiel Steltman (git: michielfromNL, msteltman@disway.nl 
+ * @brief   Emulates a  DTSU666 meter over modbus RTU . Uses MQTT to get data
+ * @version 1.0
+ * @date    2024-06-30
  * 
  * @copyright Copyright (c) 2024, MIT license
  *  DTSU666 manual: https://www.solaxpower.com/uploads/file/dtsu666-user-manual-en.pdf
@@ -20,46 +20,67 @@
 #include <Preferences.h>
 #include <DTSU666.h>
 
-// Max485 module, We use 3v3, should be 5v but this works fine for not very long lines.
+// Max485 module, We use 3v3 which works fine for not very long lines
 #define TX1     D7  // 485 DI Pin
 #define RX1     D6  // 485 RO pin
 #define RE_DE1  D2  // 485 combined RE DE
 
 #define BUTTON  D5
 
-// #define TX2 D0  // 485 DI Pin
-// #define RX2 D5  // 485 RO pin
-// #define RE_DE2 D1  // 485 combined RE DE
-
-#define SLAVE_ID_1            0x15
-#define CHECK_INTERVAL        5432  // milliseconds
-
-// MQTT section. Lster: preferences
+// Fixed configs
+#ifdef PRODUCTION
+#define LEDPIN  D1          // external led, HIGH is on
+#define DEFAULT_MQTTSERVER                ""
+const char * MQTT_CLIENT_ID       = "ESP8266_DTSU666PV";
 const char * HOSTNAME             = "dtsu666PV.local";
-const char * AP_NAME              = "DTSU666PV_AP";
-const char * MQTT_CLIENT_ID       = "ESP8266_DTSU666PV";                        
+const char * AP_NAME              = "DTSU666PV_AP";                     
+#else
+#define LEDPIN  LED_BUILTIN  // Interal led, LOW is on
+#define DEFAULT_MQTTSERVER         "diskstation.local"
+const char * MQTT_CLIENT_ID       = "ESP8266_DTSU666PV_DBG";
+const char * HOSTNAME             = "dtsu666PV_DBG.local";
+const char * AP_NAME              = "DTSU666PV_DBG_AP";
+#endif
+
+#define CHECK_INTERVAL        5432  // milliseconds interval to check if still connected
 
 Preferences   prefs;
 WiFiClient    wificlient;
 PubSubClient  mqtt(wificlient);
 JsonDocument  doc;
 
-// the custome parameters strings for configuration
-char mqttserver[40] = "diskstation.local";
+// the custome parameters strings for configuration, with defaults
+// The defaults will show up in the portal
+char mqttserver[40] = DEFAULT_MQTTSERVER;
 char mqttport[6]    = "1883";
 char mqtttopic[32]  = "pvdata/#";
+char address[4]     = "1";
 
 // Declare the meters and serial lines
-// DTSU666 Power(SLAVE_ID_1);
 SoftwareSerial S1(RX1,TX1);
-//DTSU666 Source;
-DTSU666 PV(SLAVE_ID_1);
+DTSU666 PV;
 
-// define what daat we need from PV, and where to store it
+// Led flash 
+ulong ledOnSince = 0;   // switch off in mainloop
+void LedOn(bool on) {
+  if (on) {
+    digitalWrite(LEDPIN,LEDPIN == LED_BUILTIN ? LOW : HIGH);
+    ledOnSince = millis();
+  } else {
+    digitalWrite(LEDPIN,LEDPIN == LED_BUILTIN ? HIGH : LOW);
+    ledOnSince = 0;
+  }
+}
+
+/**
+ * @brief This is the data-source implementation specific part
+ * THis specifies where to het DATA from a json record.  
+ * 
+ */
 typedef struct JsonEntry {
   const char * key;
   int         multiplier;
-  word        address;
+  word        address; // the target address
 } JsonEntry;
 
 JsonEntry pvData[] = {
@@ -77,16 +98,17 @@ JsonEntry pvData[] = {
 };
 const size_t NUM_PVREGS = ARRAY_SIZE(pvData); 
 
-// the callback
+
+// the MQTT inbound message callback
 //
-ulong ledOn = 0;   // `flash time is too short, switch off in mainloop
 void readPV (char* topic, byte* payload, unsigned int length) {
 
   doc.clear();
   deserializeJson(doc, payload);
 
   if (doc.size() > 1) {
-    digitalWrite(LED_BUILTIN, LOW); ledOn = millis();
+    // Led on, builtin leed = LOW on.
+    LedOn(true); 
     for (size_t i=0; i< NUM_PVREGS; i++) {
       float val = 0;
       val = doc[pvData[i].key].as<float>() * pvData[i].multiplier;
@@ -98,22 +120,30 @@ void readPV (char* topic, byte* payload, unsigned int length) {
   }
 }
 
-// reconnect to wifi, if not available goto AP config mode
-// when called with "force", always got to AP mode to get MQTT params
-//
-bool shouldSaveConfig = false;
+/**
+ * @brief reconnect to wifi, and/or configure
+ * @param Force if true, we start config AP mode on demand witout a timeout
+ * Else there is a 2 minute timeout, reason: if wifi goes away we otherwise would 
+ * stay in autoconf (AP) mode. So in this case try to reconnect every 2 minutes
+ */
+bool shouldSaveConfig = false;  // flag indicating that we should save parameters in flash
 
+// a separate Callback, since the way the Wifimanerg class defines the callback ( as a pointer), we cannot ue a lambda
+// see c++ 
 void saveCb() {
-  Serial.println("Should save config");
+  Serial.println(F("Parameters changed, must save them"));
   shouldSaveConfig = true; 
 }
 
-void reconnectWifi(int force = false) {
+// Automatic Wifi configuration mode
+//
+void WifiautoConnect(int force = false) {
   // local vars, when done no need to have them around
   WiFiManager   wm;
-  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqttserver, 40);
-  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqttport, 6);
-  WiFiManagerParameter custom_mqtt_topic("topic", "mqtt topic", mqtttopic, 32);
+  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqttserver, sizeof(mqttserver));
+  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqttport, sizeof(mqttport));
+  WiFiManagerParameter custom_mqtt_topic("topic", "mqtt topic", mqtttopic, sizeof(mqtttopic));
+  WiFiManagerParameter custom_rtu_address("address", "Modbus address", address, sizeof(address));
 
   //set config save notify callback. 
   // Problem: if call expetcs a function pointer, we can't use a lambda with capture so the use
@@ -125,7 +155,7 @@ void reconnectWifi(int force = false) {
   wm.addParameter(&custom_mqtt_server);
   wm.addParameter(&custom_mqtt_port);
   wm.addParameter(&custom_mqtt_topic);
-
+  wm.addParameter(&custom_rtu_address);
 #ifdef PRODUCTION
   wm.setDebugOutput(false);
 #endif
@@ -133,6 +163,7 @@ void reconnectWifi(int force = false) {
   // go into config mode , block or wat and retry 
   // this is usefull to prevent a block in AP mode when Wifi is offline
   // indefinite wait shoudl only happen whe nothing is configured
+  LedOn(true);
   if (force) {
     Serial.println(F("Start AP and configuration mode (forced) "));
     wm.startConfigPortal(AP_NAME);
@@ -142,17 +173,22 @@ void reconnectWifi(int force = false) {
     if (!wm.autoConnect(AP_NAME)) {
       Serial.println(F("failed to connect and hit timeout, restart"));
       delay(3000);
-      //reset and try again, or maybe put it to deep sleep
+      //reset and try again. 
+      // Best to reset since otherwise we could remain serving autodated PV RTU data
       ESP.reset();
       delay(5000);
     }
   }
+
+  // We have come out of AP mode and are connected to Wifi
+  LedOn(false);
+
   Serial.print(F("Connected to SSID ")) ; Serial.println(WiFi.SSID());
   Serial.print(F("IP address ")) ; Serial.println(WiFi.localIP());
 
   // parameters changed ?
   if (shouldSaveConfig) {
-    Serial.print(F("Saving MQTT parameters ")) ;
+    Serial.print(F("Saving MQTT and RTU parameters ")) ;
     strcpy(mqttserver, custom_mqtt_server.getValue());
     prefs.putString("mqttserver", mqttserver);
 
@@ -162,11 +198,16 @@ void reconnectWifi(int force = false) {
     strcpy(mqtttopic, custom_mqtt_topic.getValue());
     prefs.putString("mqtttopic", mqtttopic);
     
+    strcpy(address, custom_rtu_address.getValue());
+    prefs.putString("address", address);
+
     shouldSaveConfig = false;
   }
+  
+  WiFi.setAutoReconnect(true);
 }
 
-// connect to broker
+// (Re) connect to MQTT broker with known parameters
 //
 bool reConnectMQTT() {
 
@@ -182,7 +223,7 @@ bool reConnectMQTT() {
   
   if (!mqtt.connected()) {
     Serial.println(F("\nMQTT connect Timeout!"));
-    reconnectWifi(true);
+    WifiautoConnect(true);
     return false;
   }
   Serial.println(" OK");
@@ -199,24 +240,13 @@ bool reConnectMQTT() {
   return true;
 }
 
+// Standard code from Arduino OTA
+// 
 void setupOTA() {
 
-	// Port defaults to 8266
+	ArduinoOTA.setHostname(HOSTNAME);
 
-	// ArduinoOTA.setPort(8266);
-
-	// Hostname defaults to esp8266-[ChipID]
-
-	// ArduinoOTA.setHostname("myesp8266");
-
-	// No authentication by default
-
-	// ArduinoOTA.setPassword("admin");
-
-	// Password can be set with it's md5 value as well
-
-	// MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-
+	// MD5("admin") = 21232f297a57a5a743894a0e4a801fc3
 	ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
 
 	ArduinoOTA.onStart([]() {
@@ -238,34 +268,36 @@ void setupOTA() {
 	ArduinoOTA.begin();
 	Serial.println(F("OTA Ready"));
 }
+
 // 
 void setup() {
 
   Serial.begin(115200);
   Serial.println(F("Modbus DTSU666 PV emulator V 1.0"));
 
-  pinMode(LED_BUILTIN,OUTPUT);
-  digitalWrite(LED_BUILTIN,HIGH);
+  pinMode(LEDPIN,OUTPUT);
+  LedOn(false);
+
   pinMode(BUTTON,INPUT_PULLUP);
   
   prefs.begin("DTSU666"); // use "dtsu" namespace
-  // get stored persistent values. If nothing there? stay in AP mode
-  if (! (prefs.isKey("mqttserver") && prefs.isKey("mqttport") && prefs.isKey("mqtttopic"))) {
-    reconnectWifi(true);
+  // get stored persistent values. If nothing there? Goto config mode and stay there
+  if (! (prefs.isKey("mqttserver") && prefs.isKey("mqttport") 
+        && prefs.isKey("mqtttopic") && prefs.isKey("address"))) {
+    WifiautoConnect(true);
   } else {
-    // aparently we have been configured in the pat, so all should work
+    // aparently we have been configured in the past, so all should work
     prefs.getString("mqttserver", mqttserver, sizeof(mqttserver));
     prefs.getString("mqttport", mqttport, sizeof(mqttport));
     prefs.getString("mqtttopic", mqtttopic, sizeof(mqtttopic));
+    prefs.getString("address", address, sizeof(address));
     // just keep trying until we are online
-    reconnectWifi(false);
+    WifiautoConnect(false);
   }
 
-  WiFi.setAutoReconnect(true);
-
-  // init Serial lines
+  // init Serial line and out Modbus RTU Slave
   S1.begin(9600, SWSERIAL_8N1);
-  PV.begin(&S1,RE_DE1);
+  PV.begin(&S1,RE_DE1,String(address).toInt());
   PV.printRegs(0x0,11);
 
   // Connect to the MQTT broker
@@ -273,7 +305,7 @@ void setup() {
   mqtt.setServer(mqttserver, String(mqttport).toInt());
   mqtt.setCallback(readPV);
 
-  // Try to connect, if fails no problem mainloop will retry 
+  // Try to connect, if fails no problem because mainloop will retry 
   reConnectMQTT();
   
   setupOTA();
@@ -282,26 +314,40 @@ void setup() {
 
 }
 
-ulong lastcheck = 0;
+// Mainloop.
+// check if button pressed, still connected to wifi and/or mqtt.
+//
 void loop() {
 
+  static ulong lastcheck = 0;
+  static ulong firstPressed = 0;
+  ulong now = millis();
+
+  // if button pressed loniger than 2 seconds, goto config mode
   if (digitalRead(BUTTON) == LOW) {
-    Serial.println(F("Button pressed, going into config mode"));  
-    reconnectWifi(true);
+    if (firstPressed == 0) {
+      firstPressed = now; 
+    } else if (now - firstPressed > 2000) {
+      Serial.println(F("Button pressed > 2 seconds, start AP config mode"));  
+      LedOn(true);
+      WifiautoConnect(true);
+    }
+  } else {
+    firstPressed = 0;
   }
+  
   // switch led off if on
-  if (ledOn > 0 && millis() - ledOn > 250 ) {
-    digitalWrite(LED_BUILTIN,HIGH);
-    ledOn = 0;
+  if (ledOnSince > 0 && now - ledOnSince > 150 ) {
+    LedOn(false);
   }
 
-  if (millis() - lastcheck > CHECK_INTERVAL) {
-    // not connected? TRy to reconnect . If that fails the unit will retsart,
+  if (now - lastcheck > CHECK_INTERVAL) {
+    // not connected? TRy to reconnect . If that fails the unit will restart,
     // there is no point keep serving modbus requests with outdated data
-    if (!WiFi.isConnected())  reconnectWifi(120);
+    if (!WiFi.isConnected())  WifiautoConnect(120);
     if (!mqtt.connected())    reConnectMQTT();
       //PV.printRegs(0x2006,20);
-    lastcheck = millis();
+    lastcheck = now;
   }
   ArduinoOTA.handle();
   mqtt.loop();
