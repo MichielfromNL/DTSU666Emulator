@@ -245,25 +245,25 @@ bool reConnectMQTT() {
 void setupOTA() {
 
 	ArduinoOTA.setHostname(HOSTNAME);
-
+	
 	// MD5("admin") = 21232f297a57a5a743894a0e4a801fc3
 	ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
+	
 	ArduinoOTA.onStart([]() {
 		String type;
 		type = ArduinoOTA.getCommand() == U_FLASH ? "sketch" : "filesystem";
 		Serial.println("Start updating " + type);
 	});
-
+	
 	ArduinoOTA.onEnd([]() { Serial.println("\nEnd"); });
-
+	
 	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
 		Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
 	});
 
 	ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("OTA Error[%u]", error);
-    });
+  });
 
 	ArduinoOTA.begin();
 	Serial.println(F("OTA Ready"));
