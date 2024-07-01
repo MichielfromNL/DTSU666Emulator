@@ -6,6 +6,8 @@ My  meter/utility closet is already quite packed and there is ample room for (ye
 So I decided to emulate the second CHINT DTSU666, make it a Modbus RTU slave (server) that gets it data from other sources, which is possible because all PV data is already present.
 
 ![DTSU emulator schematics](/doc/Schematics1.png)
+![DTSU emulator box](/doc/20240701_110313.jpg)
+
 
 The data source for the PV is a Growatt inverter, which I equipped with new firmware so that I can get at the PV data.  https://github.com/Alkhateb/Growatt_ShineWiFi-X works quite well
 The stick is also an MQTT client which publishes its data to my local Mosquitto server which runs in a docker container on my Synology diskstation.
