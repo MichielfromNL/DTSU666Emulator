@@ -31,9 +31,11 @@
 #ifdef PRODUCTION
 #define LEDPIN  D1          // external led, HIGH is on
 #define DEFAULT_MQTTSERVER                ""
-const char * MQTT_CLIENT_ID       = "ESP8266_DTSU666PV";
-const char * HOSTNAME             = "dtsu666PV.local";
-const char * AP_NAME              = "DTSU666PV_AP";                     
+const char * MQTT_CLIENT_ID     = "ESP8266_DTSU666PV";
+const char * HOSTNAME           = "dtsu666PV.local";
+const char * AC_AP_NAME         = "DTSU666PV_AC";
+const char * CFG_AP_NAME        = "DTSU666PV_CFG";
+
 #else
 #define LEDPIN  LED_BUILTIN  // Interal led, LOW is on
 #define DEFAULT_MQTTSERVER         "diskstation.local"
@@ -166,11 +168,11 @@ void WifiautoConnect(int force = false) {
   LedOn(true);
   if (force) {
     Serial.println(F("Start AP and configuration mode (forced) "));
-    wm.startConfigPortal(AP_NAME);
+    wm.startConfigPortal(CFG_AP_NAME);
   } else {
     wm.setTimeout(120);
     Serial.println(F("Try to connect, if not goto AP and configuration mode for 2 minutes"));
-    if (!wm.autoConnect(AP_NAME)) {
+    if (!wm.autoConnect(AC_AP_NAME)) {
       Serial.println(F("failed to connect and hit timeout, restart"));
       delay(3000);
       //reset and try again. 
