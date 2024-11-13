@@ -139,7 +139,7 @@ void saveCb() {
 
 // Automatic Wifi configuration mode
 //
-void WifiautoConnect(int force = false) {
+void WifiautoConnect(bool force = false) {
   // local vars, when done no need to have them around
   WiFiManager   wm;
   WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqttserver, sizeof(mqttserver));
@@ -164,7 +164,7 @@ void WifiautoConnect(int force = false) {
 
   // go into config mode , block or wat and retry 
   // this is usefull to prevent a block in AP mode when Wifi is offline
-  // indefinite wait shoudl only happen whe nothing is configured
+  // indefinite wait should only happen whe nothing is configured
   LedOn(true);
   if (force) {
     Serial.println(F("Start AP and configuration mode (forced) "));
@@ -176,8 +176,8 @@ void WifiautoConnect(int force = false) {
       Serial.println(F("failed to connect and hit timeout, restart"));
       delay(3000);
       //reset and try again. 
-      // Best to reset since otherwise we could remain serving autodated PV RTU data
-      ESP.reset();
+      // Best to restart since otherwise we could remain serving autodated PV RTU data
+      ESP.restart();
       delay(5000);
     }
   }
@@ -210,22 +210,26 @@ void WifiautoConnect(int force = false) {
 }
 
 // (Re) connect to MQTT broker with known parameters
-//
+// no use to leave this, if we can't connect we will restart
 bool reConnectMQTT() {
 
-  int numtries = 40;
+  int numtries = 10;
   Serial.print(F("(re)connecting to MQTT broker ")); Serial.print(mqttserver);
   Serial.print(F(" on port ")); Serial.println(mqttport);
 
+  mqtt.connect(MQTT_CLIENT_ID);
   while (!mqtt.connected() && numtries-- > 0) {
-    delay(250);
+    delay(1000);
+    // during retries, also check wifi which may have gone away
+    if (!WiFi.isConnected())  WifiautoConnect(false);
     mqtt.connect(MQTT_CLIENT_ID);
     Serial.print(".");
   }
   
+  // Still notconnected ? then return, because we need to be able to cehck the button state
+  // ofor an eventaal reconfiguration
   if (!mqtt.connected()) {
-    Serial.println(F("\nMQTT connect Timeout!"));
-    WifiautoConnect(true);
+    Serial.println(F("\nMQTT connect Timeout"));
     return false;
   }
   Serial.println(" OK");
@@ -307,7 +311,7 @@ void setup() {
   mqtt.setServer(mqttserver, String(mqttport).toInt());
   mqtt.setCallback(readPV);
 
-  // Try to connect, if fails no problem because mainloop will retry 
+  // Attempt connection which will try until success because without MQTT there is no use to continue to run  
   reConnectMQTT();
   
   setupOTA();
@@ -325,7 +329,7 @@ void loop() {
   static ulong firstPressed = 0;
   ulong now = millis();
 
-  // if button pressed loniger than 2 seconds, goto config mode
+  // if button pressed longer than 2 seconds, goto config mode
   if (digitalRead(BUTTON) == LOW) {
     if (firstPressed == 0) {
       firstPressed = now; 
@@ -346,7 +350,7 @@ void loop() {
   if (now - lastcheck > CHECK_INTERVAL) {
     // not connected? TRy to reconnect . If that fails the unit will restart,
     // there is no point keep serving modbus requests with outdated data
-    if (!WiFi.isConnected())  WifiautoConnect(120);
+    if (!WiFi.isConnected())  WifiautoConnect(false);
     if (!mqtt.connected())    reConnectMQTT();
       //PV.printRegs(0x2006,20);
     lastcheck = now;
